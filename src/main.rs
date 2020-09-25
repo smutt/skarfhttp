@@ -43,19 +43,36 @@ struct CacheEntry {
 // Argument Validators //
 /////////////////////////
 
+// Check if capture device exists and can be put into promisc mode
 fn val_iface(iface: String) -> Result<(), String> {
-    // Check if capture device exists
     match Device::list().unwrap().iter().find(|x| x.name == iface) {
         Some(_) => { },
         _ => return Err(String::from("Invalid capture interface")),
     }
-    // Check if we can capture promiscuously, will fail if not root
     match Capture::from_device(iface.as_str()).unwrap().promisc(true).rfmon(false).open() {
         Ok(_) => debug!("test success, {:?} opened in promisc mode", iface),
         _ => return Err(String::from("Unable to open capture interface in promisc mode. Make sure you are root.")),
     }
     Ok(())
 }
+
+// Check if chop is between 1 and 1500
+fn val_chop(chop: String) -> Result<(), String> {
+    if !chop.is_ascii() {
+        return Err(String::from("chop not ascii"));
+    }
+    for cc in chop.chars() {
+        if !cc.is_numeric() {
+            return Err(String::from("chop not number"));
+        }
+    }
+    let num = chop.chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
+    if num > 1500 {
+        return Err(String::from("chop out of range"));
+    }
+    Ok(())
+}
+
 
 ///////////////////////
 // GENERAL FUNCTIONS //
@@ -67,7 +84,7 @@ fn euthanize() {
     // TODO
     std::process::exit(0);
 }
-
+/*
 // End execution quickly with message to stdout
 fn cease(s: &str) {
     println!("{}", s);
@@ -91,7 +108,7 @@ fn derive_cache_key(src_ip: &ipaddress::IPAddress, dst_ip: &ipaddress::IPAddress
 fn ipv4_display(ip: &[u8;4]) -> String {
     return ip.iter().map(|x| format!(".{}", x)).collect::<String>().split_off(1);
 }
-
+*/
 /////////////////////////////
 // BEGIN PROGRAM EXECUTION //
 /////////////////////////////
@@ -109,6 +126,7 @@ fn main() {
              .long("chop")
              .value_name("BYTES")
              .takes_value(true)
+             .validator(val_chop)
              .required(false))
         .arg(Arg::with_name("dns")
              .help("extract DNS names from URLs")
@@ -166,7 +184,7 @@ fn main() {
     let mut threads = vec![]; // Our threads
 
     // Setup our caches
-    let cache = Arc::new(RwLock::new(HashMap::<String, CacheEntry>::new()));
+    let _cache = Arc::new(RwLock::new(HashMap::<String, CacheEntry>::new()));
 
     let listen_thr = thread::Builder::new().name("listen_thr".to_string()).spawn(move || {
         let bpf = format!("tcp port {}", cli_opts.value_of("port").unwrap());
@@ -180,7 +198,7 @@ fn main() {
             Err(err) => error!("BPF error {}", err.to_string()),
         }
 
-        while let Ok(packet) = capture.next() {
+        while let Ok(mut packet) = capture.next() {
             /* pcap/Etherparse strips the Ethernet FCS before it hands the packet to us.
             So a 60 byte packet was 64 bytes on the wire.
             Etherparse interprets any Ethernet padding as TCP data. I consider this a bug.
@@ -188,6 +206,16 @@ fn main() {
             The chances of us actually needing that small of a packet are close to zero. */
             if packet.len() <= 60 {
                 continue;
+            }
+
+            if cli_opts.is_present("chop") {
+                let num = cli_opts.value_of("chop").unwrap().chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
+                if (num as usize) < packet.data.len() {
+                    let new_data = packet.data.get(num as usize..).unwrap();
+                    packet.data = new_data;
+                } else {
+                    warn!("chop is larger than captured packet");
+                }
             }
 
             match PacketHeaders::from_ethernet_slice(&packet) {
@@ -213,7 +241,7 @@ fn main() {
                     //debug!("Everything: {:?}", pkt);
                     match pkt.ip.unwrap() {
                         Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
-                        Version4(ipv4) => {
+                        Version4(_ipv4) => {
                             match pkt.transport.unwrap() {
                                 Udp(_) => warn!("UDP transport captured when TCP expected"),
                                 Tcp(_tcp) => {
