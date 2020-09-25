@@ -56,22 +56,33 @@ fn val_iface(iface: String) -> Result<(), String> {
     Ok(())
 }
 
-// Check if chop is between 1 and 1500
-fn val_chop(chop: String) -> Result<(), String> {
-    if !chop.is_ascii() {
-        return Err(String::from("chop not ascii"));
+// Check if val is valid number between umin and umax
+fn val_range(val: &String, umin: u32, umax: u32) -> Result<(), String> {
+    if !val.is_ascii() {
+        return Err(String::from("not ascii"));
     }
-    for cc in chop.chars() {
+    for cc in val.chars() {
         if !cc.is_numeric() {
-            return Err(String::from("chop not number"));
+            return Err(String::from("not number"));
         }
     }
-    let num = chop.chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
-    if num > 1500 {
-        return Err(String::from("chop out of range"));
+    let num = val.chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
+    if num > umax || num < umin {
+        return Err(String::from("out of range"));
     }
     Ok(())
 }
+
+// Check if chop is between 1 and 1500
+fn val_chop(chop: String) -> Result<(), String> {
+    return val_range(&chop, 1, 1500);
+}
+
+// Port must be a number between 1 and 65535
+fn val_port(port: String) -> Result<(), String> {
+    return val_range(&port, 1, 65535);
+}
+
 
 
 ///////////////////////
@@ -148,6 +159,7 @@ fn main() {
              .long("port")
              .value_name("PORT")
              .takes_value(true)
+             .validator(val_port)
              .default_value("80"))
         .arg(Arg::with_name("headers")
              .help("List of HTTP headers to print e.g. server,date")
@@ -211,10 +223,16 @@ fn main() {
             if cli_opts.is_present("chop") {
                 let num = cli_opts.value_of("chop").unwrap().chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
                 if (num as usize) < packet.data.len() {
-                    let new_data = packet.data.get(num as usize..).unwrap();
-                    packet.data = new_data;
+                    let new_data = packet.data.get(num as usize..);
+                    if new_data == None {
+                        warn!("Error chopping packet");
+                        continue
+                    } else {
+                        packet.data = new_data.unwrap();
+                    }
                 } else {
                     warn!("chop is larger than captured packet");
+                    continue
                 }
             }
 
