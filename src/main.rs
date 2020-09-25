@@ -9,15 +9,15 @@ All rights reserved.
 #[macro_use] extern crate log;
 extern crate clap;
 use clap::{Arg, App};
-//use std::{iter, time, thread};
+use std::thread;
 use std::time::{SystemTime};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use pcap::{Capture, Device};
-//use etherparse::PacketHeaders;
-//use etherparse::IpHeader::*;
-//use etherparse::TransportHeader::*;
+use etherparse::PacketHeaders;
+use etherparse::IpHeader::*;
+use etherparse::TransportHeader::*;
 //use ipaddress::ipv4;
 
 ///////////////
@@ -50,10 +50,10 @@ fn val_iface(iface: String) -> Result<(), String> {
         _ => return Err(String::from("Invalid capture interface")),
     }
     // Check if we can capture promiscuously, will fail if not root
-/*    match Capture::from_device(&iface).unwrap().promisc(true).rfmon(false).open() {
+    match Capture::from_device(iface.as_str()).unwrap().promisc(true).rfmon(false).open() {
         Ok(_) => debug!("test success, {:?} opened in promisc mode", iface),
         _ => return Err(String::from("Unable to open capture interface in promisc mode. Make sure you are root.")),
-    }*/
+    }
     Ok(())
 }
 
@@ -163,41 +163,24 @@ fn main() {
         euthanize();
     }).expect("Error setting Ctrl-C handler");
 
-    //    let mut threads = vec![]; // Our threads
+    let mut threads = vec![]; // Our threads
 
     // Setup our caches
     let cache = Arc::new(RwLock::new(HashMap::<String, CacheEntry>::new()));
 
-    /*
-    let listen_thr = thread::Builder::new().name("server_4".to_string()).spawn(move || {
-        let bpf = format!("tcp port {}", &cli_opts.port);
+    let listen_thr = thread::Builder::new().name("listen_thr".to_string()).spawn(move || {
+        let bpf = format!("tcp port {}", cli_opts.value_of("port").unwrap());
 
-        let mut capture = Capture::from_device(Opt::from_args().iface.as_str()).unwrap()
+        let mut capture = Capture::from_device(cli_opts.value_of("iface").unwrap()).unwrap()
             .promisc(true)
             .rfmon(false)
             .open().unwrap();
-        match capture.filter(bpf_server_4){
+        match capture.filter(&bpf){
             Ok(_) => (),
             Err(err) => error!("BPF error {}", err.to_string()),
         }
 
         while let Ok(packet) = capture.next() {
-            debug!("Investigating server_cache_v4 staleness {:?}", server_cache_v4.read().len());
-            let mut stale = Vec::new();
-            for (key,entry) in server_cache_v4.read().iter() {
-                if entry.stale {
-                    if entry.ts < SystemTime::now() - Duration::new(CACHE_MIN_STALENESS, 0) {
-                        stale.push(key.clone());
-                        debug!("Found stale server_cache_v4 entry {:?}", key);
-                    }
-                }
-            }
-            for key in stale.iter() {
-                server_cache_v4.write().remove(key);
-                debug!("Deleted stale server_cache_v4 entry {:?}", key);
-            }
-            drop(stale);
-
             /* pcap/Etherparse strips the Ethernet FCS before it hands the packet to us.
             So a 60 byte packet was 64 bytes on the wire.
             Etherparse interprets any Ethernet padding as TCP data. I consider this a bug.
@@ -207,36 +190,48 @@ fn main() {
                 continue;
             }
 
-            let pkt = PacketHeaders::from_ethernet_slice(&packet).expect("Failed to decode packet in server_4_thr");
-            //debug!("Everything: {:?}", pkt);
-
-            match pkt.ip.unwrap() {
-                Version6(_) => {
-                    warn!("IPv6 packet captured, but IPv4 expected");
-                    continue;
+            match PacketHeaders::from_ethernet_slice(&packet) {
+                Err(err) => {
+                    debug!("Failed to decode pkt as ethernet {:?}", err);
+                    match PacketHeaders::from_ip_slice(&packet) {
+                        Err(err) => debug!("Failed to decode pkt as IP {:?}", err),
+                        Ok(ip) => match ip.ip.unwrap() {
+                            Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
+                            Version4(_) => {
+                                //debug!("Everything: {:?}", pkt);
+                                match ip.transport.unwrap() {
+                                    Udp(_) => warn!("UDP transport captured when TCP expected"),
+                                    Tcp(_tcp) => {
+                                        info!("WIN!");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                Version4(ipv4) => {
-                    match pkt.transport.unwrap() {
-                        Udp(_) => warn!("UDP transport captured when TCP expected"),
-                        Tcp(tcp) => {
-                            //debug!("resp_tcp_seq: {:?}", tcp.sequence_number);
-                            //debug!("payload_len: {:?}", pkt.payload.len());
-                            parse_server_hello(&acl_cache_v4_srv, &client_cache_v4_srv, &server_cache_v4,
-                                               ipv4::new(ipv4_display(&ipv4.source)).unwrap(),
-                                               ipv4::new(ipv4_display(&ipv4.destination)).unwrap(),
-                                               tcp, pkt.payload);
+                Ok(pkt) => {
+                    //debug!("Everything: {:?}", pkt);
+                    match pkt.ip.unwrap() {
+                        Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
+                        Version4(ipv4) => {
+                            match pkt.transport.unwrap() {
+                                Udp(_) => warn!("UDP transport captured when TCP expected"),
+                                Tcp(_tcp) => {
+                                    info!("WIN!");
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }).unwrap();
-    threads.push(listen_4_thr);
+    threads.push(listen_thr);
 
 
     for thr in threads {
         thr.join().unwrap();
     }
-     */
+
     debug!("Finish");
 }
