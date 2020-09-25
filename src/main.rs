@@ -83,6 +83,26 @@ fn val_port(port: String) -> Result<(), String> {
     return val_range(&port, 1, 65535);
 }
 
+fn val_requests(request: String) -> Result<(), String> {
+    let allowed = ["POST", "GET"];
+    if !allowed.contains(&request.to_uppercase().as_str()) {
+        return Err(String::from("unsupported request method"));
+    }
+    Ok(())
+}
+
+fn val_responses(response: String) -> Result<(), String> {
+    let allowed = ["200", "404"];
+    if !allowed.contains(&response.to_uppercase().as_str()) {
+        return Err(String::from("unsupported response code"));
+    }
+    Ok(())
+}
+
+
+////////////////////
+// HTTP FUNCTIONS //
+////////////////////
 
 
 ///////////////////////
@@ -160,33 +180,39 @@ fn main() {
              .value_name("PORT")
              .takes_value(true)
              .validator(val_port)
-             .default_value("80"))
+             .default_value("80")
+             .required(false))
         .arg(Arg::with_name("headers")
              .help("List of HTTP headers to print e.g. server,date")
              .short("h")
              .long("headers")
              .takes_value(true)
-             .use_delimiter(true))
+             .use_delimiter(true)
+             .required(false))
         .arg(Arg::with_name("json")
-             .help("When content type includes string 'json', print this json key from body")
+             .help("When content type includes string 'json', print values of these json keys from body")
              .short("j")
              .long("json")
              .value_name("KEY")
              .takes_value(true)
-             .required(false)
-             .multiple(false))
+             .require_delimiter(true)
+             .required(false))
         .arg(Arg::with_name("requests")
              .help("List of request methods to match e.g. GET,POST")
              .short("q")
              .long("requests")
              .takes_value(true)
-             .use_delimiter(true))
+             .validator(val_requests)
+             .require_delimiter(true)
+             .conflicts_with("responses"))
         .arg(Arg::with_name("responses")
              .help("List of response statuses to match e.g. 200,404")
              .short("s")
              .long("responses")
              .takes_value(true)
-             .use_delimiter(true))
+             .validator(val_responses)
+             .use_delimiter(true)
+             .conflicts_with("requests"))
         .get_matches();
 
     ctrlc::set_handler(move || {
