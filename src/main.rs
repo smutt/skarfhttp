@@ -18,7 +18,7 @@ use pcap::{Capture, Device};
 use etherparse::PacketHeaders;
 use etherparse::IpHeader::*;
 use etherparse::TransportHeader::*;
-//use ipaddress::ipv4;
+use httparse::{Status, Header, Response, Request};
 
 ///////////////
 // CONSTANTS //
@@ -99,11 +99,60 @@ fn val_responses(response: String) -> Result<(), String> {
     Ok(())
 }
 
-
 ////////////////////
 // HTTP FUNCTIONS //
 ////////////////////
+fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches, pkt: &etherparse::PacketHeaders) {
+    let ipv4_header: etherparse::Ipv4Header;
+    match pkt.ip.unwrap() {
+        Version6(_hdr) => cease("Got IPv6 header in init_pkt_parse"),
+        Version4(hdr) => ipv4_header = hdr,
+    }
 
+    let tcp_header: etherparse::TcpHeader;
+    match pkt.transport.unwrap() {
+        Udp(_hdr) => cease("Got UDP header in init_pkt_parse"),
+        Tcp(hdr) => tcp_header = hdr,
+    }
+
+    let key = derive_cache_key(&ipv4_display(&ipv4_header.source),
+                               &ipv4_display(&ipv4_header.destination),
+                               &tcp_header.source_port,
+                               &tcp_header.destination_port);
+
+    if cache.read().contains_key(&key) && !cache.read().get(&key).unwrap().stale {
+        debug!("We've seen you before!");
+    } else {
+        let mut http_headers = [httparse::EMPTY_HEADER; 16];
+        if cli_opts.is_present("requests") {
+            let mut req = httparse::Request::new(&mut http_headers);
+            match req.parse(pkt.payload) {
+                Err(err) => {
+                    warn!("Error parsing HTTP request {:?}", err);
+                    return
+                },
+                Ok(status) => {
+                    if status.is_complete() {
+                        debug!("Successful parse");
+                    } else {
+                        debug!("Creating new cache entry: {:?}", key);
+                        cache.write().insert(key, CacheEntry {
+                            ts: SystemTime::now(),
+                            seq: Some(tcp_header.sequence_number + pkt.payload.len() as u32),
+                            data: Some(pkt.payload.to_vec()),
+                            stale: false,
+                        });
+                    }
+                }
+            }
+        } else if cli_opts.is_present("responses") {
+
+
+        } else {
+            cease("Neither requests or responses specified");
+        }
+    }
+}
 
 ///////////////////////
 // GENERAL FUNCTIONS //
@@ -115,7 +164,7 @@ fn euthanize() {
     // TODO
     std::process::exit(0);
 }
-/*
+
 // End execution quickly with message to stdout
 fn cease(s: &str) {
     println!("{}", s);
@@ -123,11 +172,11 @@ fn cease(s: &str) {
 }
 
 // Derives a cache key from unique pairing of values
-fn derive_cache_key(src_ip: &ipaddress::IPAddress, dst_ip: &ipaddress::IPAddress, src_port: &u16, dst_port: &u16) -> String {
+fn derive_cache_key(src_ip: &String, dst_ip: &String, src_port: &u16, dst_port: &u16) -> String {
     let delim = "_".to_string();
-    let mut key = src_ip.to_s();
+    let mut key = src_ip.clone();
     key.push_str(&delim);
-    key.push_str(&dst_ip.to_s());
+    key.push_str(&dst_ip);
     key.push_str(&delim);
     key.push_str(&src_port.to_string());
     key.push_str(&delim);
@@ -139,7 +188,7 @@ fn derive_cache_key(src_ip: &ipaddress::IPAddress, dst_ip: &ipaddress::IPAddress
 fn ipv4_display(ip: &[u8;4]) -> String {
     return ip.iter().map(|x| format!(".{}", x)).collect::<String>().split_off(1);
 }
-*/
+
 /////////////////////////////
 // BEGIN PROGRAM EXECUTION //
 /////////////////////////////
@@ -221,8 +270,8 @@ fn main() {
 
     let mut threads = vec![]; // Our threads
 
-    // Setup our caches
-    let _cache = Arc::new(RwLock::new(HashMap::<String, CacheEntry>::new()));
+    // Setup our cache
+    let cache = Arc::new(RwLock::new(HashMap::<String, CacheEntry>::new()));
 
     let listen_thr = thread::Builder::new().name("listen_thr".to_string()).spawn(move || {
         let bpf = format!("tcp port {}", cli_opts.value_of("port").unwrap());
@@ -267,14 +316,14 @@ fn main() {
                     debug!("Failed to decode pkt as ethernet {:?}", err);
                     match PacketHeaders::from_ip_slice(&packet) {
                         Err(err) => debug!("Failed to decode pkt as IP {:?}", err),
-                        Ok(ip) => match ip.ip.unwrap() {
+                        Ok(pkt) => match pkt.ip.unwrap() {
                             Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
                             Version4(_) => {
                                 //debug!("Everything: {:?}", pkt);
-                                match ip.transport.unwrap() {
+                                match pkt.transport.unwrap() {
                                     Udp(_) => warn!("UDP transport captured when TCP expected"),
-                                    Tcp(_tcp) => {
-                                        info!("WIN!");
+                                    Tcp(_) => {
+                                        init_pkt_parse(&cache, &cli_opts, &pkt);
                                     }
                                 }
                             }
@@ -288,8 +337,8 @@ fn main() {
                         Version4(_ipv4) => {
                             match pkt.transport.unwrap() {
                                 Udp(_) => warn!("UDP transport captured when TCP expected"),
-                                Tcp(_tcp) => {
-                                    info!("WIN!");
+                                Tcp(_) => {
+                                    init_pkt_parse(&cache, &cli_opts, &pkt);
                                 }
                             }
                         }
