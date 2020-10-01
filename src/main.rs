@@ -102,23 +102,13 @@ fn val_responses(response: String) -> Result<(), String> {
 ////////////////////
 // HTTP FUNCTIONS //
 ////////////////////
-fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches, pkt: &etherparse::PacketHeaders) {
-    let ipv4_header: etherparse::Ipv4Header;
-    match pkt.ip.unwrap() {
-        Version6(_hdr) => cease("Got IPv6 header in init_pkt_parse"),
-        Version4(hdr) => ipv4_header = hdr,
-    }
+fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches,
+                  ipv4_hdr: &etherparse::Ipv4Header, tcp_hdr: &etherparse::TcpHeader, payload: &[u8]) {
 
-    let tcp_header: etherparse::TcpHeader;
-    match pkt.transport.unwrap() {
-        Udp(_hdr) => cease("Got UDP header in init_pkt_parse"),
-        Tcp(hdr) => tcp_header = hdr,
-    }
-
-    let key = derive_cache_key(&ipv4_display(&ipv4_header.source),
-                               &ipv4_display(&ipv4_header.destination),
-                               &tcp_header.source_port,
-                               &tcp_header.destination_port);
+    let key = derive_cache_key(&ipv4_display(&ipv4_hdr.source),
+                               &ipv4_display(&ipv4_hdr.destination),
+                               &tcp_hdr.source_port,
+                               &tcp_hdr.destination_port);
 
     if cache.read().contains_key(&key) && !cache.read().get(&key).unwrap().stale {
         debug!("We've seen you before!");
@@ -126,7 +116,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
         let mut http_headers = [httparse::EMPTY_HEADER; 16];
         if cli_opts.is_present("requests") {
             let mut req = httparse::Request::new(&mut http_headers);
-            match req.parse(pkt.payload) {
+            match req.parse(payload) {
                 Err(err) => {
                     warn!("Error parsing HTTP request {:?}", err);
                     return
@@ -138,8 +128,8 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                         debug!("Creating new cache entry: {:?}", key);
                         cache.write().insert(key, CacheEntry {
                             ts: SystemTime::now(),
-                            seq: Some(tcp_header.sequence_number + pkt.payload.len() as u32),
-                            data: Some(pkt.payload.to_vec()),
+                            seq: Some(tcp_hdr.sequence_number + payload.len() as u32),
+                            data: Some(payload.to_vec()),
                             stale: false,
                         });
                     }
@@ -318,12 +308,12 @@ fn main() {
                         Err(err) => debug!("Failed to decode pkt as IP {:?}", err),
                         Ok(pkt) => match pkt.ip.unwrap() {
                             Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
-                            Version4(_) => {
+                            Version4(ipv4) => {
                                 //debug!("Everything: {:?}", pkt);
                                 match pkt.transport.unwrap() {
                                     Udp(_) => warn!("UDP transport captured when TCP expected"),
-                                    Tcp(_) => {
-                                        init_pkt_parse(&cache, &cli_opts, &pkt);
+                                    Tcp(tcp) => {
+                                        init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
                                     }
                                 }
                             }
@@ -334,11 +324,11 @@ fn main() {
                     //debug!("Everything: {:?}", pkt);
                     match pkt.ip.unwrap() {
                         Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
-                        Version4(_ipv4) => {
+                        Version4(ipv4) => {
                             match pkt.transport.unwrap() {
                                 Udp(_) => warn!("UDP transport captured when TCP expected"),
-                                Tcp(_) => {
-                                    init_pkt_parse(&cache, &cli_opts, &pkt);
+                                Tcp(tcp) => {
+                                    init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
                                 }
                             }
                         }
