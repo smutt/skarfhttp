@@ -18,7 +18,7 @@ use pcap::{Capture, Device};
 use etherparse::PacketHeaders;
 use etherparse::IpHeader::*;
 use etherparse::TransportHeader::*;
-use httparse::{Status, Header, Response, Request};
+//use httparse::{Status, Header, Response, Request};
 
 ///////////////
 // CONSTANTS //
@@ -47,7 +47,7 @@ struct CacheEntry {
 fn val_iface(iface: String) -> Result<(), String> {
     match Device::list().unwrap().iter().find(|x| x.name == iface) {
         Some(_) => { },
-        _ => return Err(String::from("Invalid capture interface")),
+        _ => return Err(String::from("Invalid capture interface. Make sure you are root.")),
     }
     match Capture::from_device(iface.as_str()).unwrap().promisc(true).rfmon(false).open() {
         Ok(_) => debug!("test success, {:?} opened in promisc mode", iface),
@@ -275,7 +275,7 @@ fn main() {
              .long("dns")
              .takes_value(false)
              .multiple(false))
-        .arg(Arg::with_name("interface")
+        .arg(Arg::with_name("iface")
              .help("pcap interface to listen on, typically a network interface")
              .short("i")
              .long("iface")
@@ -336,70 +336,88 @@ fn main() {
 
     let listen_thr = thread::Builder::new().name("listen_thr".to_string()).spawn(move || {
         let bpf = format!("tcp port {}", cli_opts.value_of("port").unwrap());
+        debug!("filter {:?}", bpf);
 
         let mut capture = Capture::from_device(cli_opts.value_of("iface").unwrap()).unwrap()
             .promisc(true)
-            .rfmon(false)
+            //.rfmon(false)
+            //.timeout(10)
+            //.snaplen(65535)
             .open().unwrap();
         match capture.filter(&bpf){
             Ok(_) => (),
             Err(err) => error!("BPF error {}", err.to_string()),
         }
 
-        while let Ok(mut packet) = capture.next() {
-            /* pcap/Etherparse strips the Ethernet FCS before it hands the packet to us.
-            So a 60 byte packet was 64 bytes on the wire.
-            Etherparse interprets any Ethernet padding as TCP data. I consider this a bug.
-            Therefore, we ignore any packet 60 bytes or less to prevent us from storing erroneous TCP payloads.
-            The chances of us actually needing that small of a packet are close to zero. */
-            if packet.len() <= 60 {
-                continue;
-            }
-
-            if cli_opts.is_present("chop") {
-                let num = cli_opts.value_of("chop").unwrap().chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
-                if (num as usize) < packet.data.len() {
-                    let new_data = packet.data.get(num as usize..);
-                    if new_data == None {
-                        warn!("Error chopping packet");
-                        continue
-                    } else {
-                        packet.data = new_data.unwrap();
-                    }
-                } else {
-                    warn!("chop is larger than captured packet");
-                    continue
-                }
-            }
-
-            match PacketHeaders::from_ethernet_slice(&packet) {
+        debug!("Starting capture");
+        loop {
+            match capture.next() {
                 Err(err) => {
-                    debug!("Failed to decode pkt as ethernet {:?}", err);
-                    match PacketHeaders::from_ip_slice(&packet) {
-                        Err(err) => debug!("Failed to decode pkt as IP {:?}", err),
-                        Ok(pkt) => match pkt.ip.unwrap() {
-                            Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
-                            Version4(ipv4) => {
-                                //debug!("Everything: {:?}", pkt);
-                                match pkt.transport.unwrap() {
-                                    Udp(_) => warn!("UDP transport captured when TCP expected"),
-                                    Tcp(tcp) => {
-                                        init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
-                                    }
+                    error!("capture error {:?}", err);
+                    break;
+                },
+                Ok(raw_pkt) => {
+                    debug!("Capture started");
+
+                    /* pcap/Etherparse strips the Ethernet FCS before it hands the packet to us.
+                    So a 60 byte packet was 64 bytes on the wire.
+                    Etherparse interprets any Ethernet padding as TCP data. I consider this a bug.
+                    Therefore, we ignore any packet 60 bytes or less to prevent us from storing erroneous TCP payloads.
+                    The chances of us actually needing that small of a packet are close to zero. */
+                    if raw_pkt.len() <= 60 {
+                        continue;
+                    }
+
+                    debug!("Everything: {:?}", raw_pkt);
+                    let mut packet = raw_pkt.clone();
+                    if cli_opts.is_present("chop") {
+                        let num = cli_opts.value_of("chop").unwrap().chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
+                        if (num as usize) > raw_pkt.data.len() {
+                            warn!("chop is larger than captured packet");
+                            continue
+                        } else {
+                            match raw_pkt.data.get(num as usize..) {
+                                Some(new_data) => packet.data = new_data,
+                                _ => {
+                                    warn!("Error chopping packet");
+                                    continue;
                                 }
                             }
                         }
                     }
-                }
-                Ok(pkt) => {
-                    //debug!("Everything: {:?}", pkt);
-                    match pkt.ip.unwrap() {
-                        Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
-                        Version4(ipv4) => {
-                            match pkt.transport.unwrap() {
-                                Udp(_) => warn!("UDP transport captured when TCP expected"),
-                                Tcp(tcp) => {
-                                    init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+
+                    match PacketHeaders::from_ethernet_slice(&packet) {
+                        Err(err) => {
+                            debug!("Failed to decode pkt as ethernet {:?}", err);
+                            match PacketHeaders::from_ip_slice(&packet) {
+                                Err(err) => debug!("Failed to decode pkt as IP {:?}", err),
+                                Ok(pkt) => match pkt.ip.unwrap() {
+                                    Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
+                                    Version4(ipv4) => {
+                                        //debug!("Everything: {:?}", pkt);
+                                        match pkt.transport.unwrap() {
+                                            Udp(_) => warn!("UDP transport captured when TCP expected"),
+                                            Tcp(tcp) => {
+                                                debug!("Calling init_pkt_parse");
+                                                init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(pkt) => {
+                            //debug!("Everything: {:?}", pkt);
+                            match pkt.ip.unwrap() {
+                                Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
+                                Version4(ipv4) => {
+                                    match pkt.transport.unwrap() {
+                                        Udp(_) => warn!("UDP transport captured when TCP expected"),
+                                        Tcp(tcp) => {
+                                            debug!("Calling init_pkt_parse");
+                                            init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -410,9 +428,8 @@ fn main() {
     }).unwrap();
     threads.push(listen_thr);
 
-
     for thr in threads {
-        thr.join().unwrap();
+        thr.join().expect("Couldn't join the thread");
     }
 
     debug!("Finish");
