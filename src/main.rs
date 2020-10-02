@@ -102,6 +102,8 @@ fn val_responses(response: String) -> Result<(), String> {
 ////////////////////
 // HTTP FUNCTIONS //
 ////////////////////
+// Init the packet parsing
+// Handles TCP reconstruction and cache entries
 fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches,
                   ipv4_hdr: &etherparse::Ipv4Header, tcp_hdr: &etherparse::TcpHeader, payload: &[u8]) {
 
@@ -110,36 +112,103 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                                &tcp_hdr.source_port,
                                &tcp_hdr.destination_port);
 
+    let mut data: Vec<u8> = Vec::new();
     if cache.read().contains_key(&key) && !cache.read().get(&key).unwrap().stale {
         debug!("We've seen you before!");
+        if let Some(entry) = cache.write().get_mut(&key) {
+            if entry.stale {
+                debug!("Entry marked not stale now stale");
+                return;
+            }
+            if entry.seq.unwrap() != tcp_hdr.sequence_number {
+                debug!("Out-0f-order TCP packets detected, message lost");
+                return;
+            }
+            data = entry.data.clone().unwrap();
+        }
+        data.extend_from_slice(&payload);
     } else {
-        let mut http_headers = [httparse::EMPTY_HEADER; 16];
-        if cli_opts.is_present("requests") {
-            let mut req = httparse::Request::new(&mut http_headers);
-            match req.parse(payload) {
-                Err(err) => {
-                    warn!("Error parsing HTTP request {:?}", err);
-                    return
-                },
-                Ok(status) => {
-                    if status.is_complete() {
-                        debug!("Successful parse");
+        data = payload.clone().to_vec();
+    }
+
+    let mut http_headers = [httparse::EMPTY_HEADER; 16];
+    if cli_opts.is_present("requests") {
+        let mut req = httparse::Request::new(&mut http_headers);
+        match req.parse(&data) {
+            Err(err) => {
+                warn!("Error parsing HTTP request {:?}", err);
+                return
+            },
+            Ok(status) => {
+                if status.is_complete() { // do more here
+                    debug!("Successful parse");
+                    if let Some(entry) = cache.write().get_mut(&key) {
+                        entry.stale = true;
+                        entry.ts = SystemTime::now();
+                    }else{
+                        panic!("Failed to update cache");
+                    }
+                } else {
+                    if cache.read().contains_key(&key) {
+                        debug!("Updating existing cache entry: {:?}", key);
+                        if let Some(entry) = cache.write().get_mut(&key) {
+                            entry.ts = SystemTime::now();
+                            entry.seq =  Some(tcp_hdr.sequence_number + payload.len() as u32);
+                            entry.data = Some(data.to_vec());
+                            entry.stale = false;
+                        } else {
+                            panic!("Failed to update cache");
+                        }
                     } else {
                         debug!("Creating new cache entry: {:?}", key);
                         cache.write().insert(key, CacheEntry {
                             ts: SystemTime::now(),
                             seq: Some(tcp_hdr.sequence_number + payload.len() as u32),
-                            data: Some(payload.to_vec()),
+                            data: Some(data.to_vec()),
                             stale: false,
                         });
                     }
                 }
             }
-        } else if cli_opts.is_present("responses") {
-
-
-        } else {
-            cease("Neither requests or responses specified");
+        }
+    } else { // Assume cli_opts.is_present("responses")
+        let mut resp = httparse::Response::new(&mut http_headers);
+        match resp.parse(&data) {
+            Err(err) => {
+                warn!("Error parsing HTTP response {:?}", err);
+                return
+            },
+            Ok(status) => {
+                if status.is_complete() { // do more here
+                    debug!("Successful parse");
+                    if let Some(entry) = cache.write().get_mut(&key) {
+                        entry.stale = true;
+                        entry.ts = SystemTime::now();
+                    } else {
+                        panic!("Failed to update cache");
+                    }
+                } else {
+                    if cache.read().contains_key(&key) {
+                        debug!("Updating existing cache entry: {:?}", key);
+                        if let Some(entry) = cache.write().get_mut(&key) {
+                            entry.ts = SystemTime::now();
+                            entry.seq =  Some(tcp_hdr.sequence_number + payload.len() as u32);
+                            entry.data = Some(data.to_vec());
+                            entry.stale = false;
+                        } else {
+                            panic!("Failed to update cache");
+                        }
+                    } else {
+                        debug!("Creating new cache entry: {:?}", key);
+                        cache.write().insert(key, CacheEntry {
+                            ts: SystemTime::now(),
+                            seq: Some(tcp_hdr.sequence_number + payload.len() as u32),
+                            data: Some(data.to_vec()),
+                            stale: false,
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -155,11 +224,13 @@ fn euthanize() {
     std::process::exit(0);
 }
 
+/*
 // End execution quickly with message to stdout
 fn cease(s: &str) {
     println!("{}", s);
     std::process::exit(0);
 }
+ */
 
 // Derives a cache key from unique pairing of values
 fn derive_cache_key(src_ip: &String, dst_ip: &String, src_port: &u16, dst_port: &u16) -> String {
