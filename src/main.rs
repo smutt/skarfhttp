@@ -340,9 +340,9 @@ fn main() {
 
         let mut capture = Capture::from_device(cli_opts.value_of("iface").unwrap()).unwrap()
             .promisc(true)
-            //.rfmon(false)
+            .rfmon(false)
             //.timeout(10)
-            //.snaplen(65535)
+            .snaplen(65535)
             .open().unwrap();
         match capture.filter(&bpf){
             Ok(_) => (),
