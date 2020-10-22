@@ -250,6 +250,35 @@ fn ipv4_display(ip: &[u8;4]) -> String {
     return ip.iter().map(|x| format!(".{}", x)).collect::<String>().split_off(1);
 }
 
+// Prints pretty hex representation of passed slice
+fn print_hex(data: &[u8]) {
+    let mut pos:usize = 0;
+    let mut row:usize = 0;
+    let mut out:String = "0000 ".to_string();
+    let mut decoded:String = "".to_string();
+
+    for byte in data {
+        if pos != 0 && pos % 16 == 0 {
+            println!("{} {}", out, decoded);
+            row = row + 1;
+            out = format!("{:0>4X} ", row);
+            decoded = "".to_string();
+        }else if pos != 0 && pos % 8 == 0 {
+            out.push_str(" ");
+        }
+
+        out.push_str(&format!(" {:0>2X}", &byte));
+        if byte.is_ascii_alphanumeric() || byte.is_ascii_punctuation() {
+            decoded.push_str(&String::from_utf8(vec![*byte]).expect("Error converting 8-bit value to ASCII"));
+        }else if byte.is_ascii_whitespace() {
+            decoded.push_str(" ");
+        }else{
+            decoded.push_str(".");
+        }
+        pos = pos + 1;
+    }
+}
+
 /////////////////////////////
 // BEGIN PROGRAM EXECUTION //
 /////////////////////////////
@@ -368,7 +397,9 @@ fn main() {
                         continue;
                     }
 
-                    debug!("Everything: {:?}", raw_pkt);
+                    //debug!("Everything: {:?}", raw_pkt);
+                    debug!("Everything");
+                    print_hex(&raw_pkt.data);
                     let mut packet = raw_pkt.clone();
                     if cli_opts.is_present("chop") {
                         let num = cli_opts.value_of("chop").unwrap().chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
