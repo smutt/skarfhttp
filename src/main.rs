@@ -7,7 +7,6 @@ All rights reserved.
 // INCLUDES //
 //////////////
 #[macro_use] extern crate log;
-extern crate clap;
 use clap::{Arg, App};
 use std::thread;
 use std::time::{SystemTime};
@@ -23,6 +22,8 @@ use etherparse::TransportHeader::*;
 ///////////////
 // CONSTANTS //
 ///////////////
+const SUPPORTED_HTTP_REQUESTS: [&str; 2] = ["POST", "GET"]; // Supported HTTP requests
+const SUPPORTED_HTTP_RESPONSES: [&str; 2] = ["200", "404"]; // Supported HTTP responses
 
 /////////////
 // STRUCTS //
@@ -84,16 +85,14 @@ fn val_port(port: String) -> Result<(), String> {
 }
 
 fn val_requests(request: String) -> Result<(), String> {
-    let allowed = ["POST", "GET"];
-    if !allowed.contains(&request.to_uppercase().as_str()) {
+    if !SUPPORTED_HTTP_REQUESTS.contains(&request.as_str()) {
         return Err(String::from("unsupported request method"));
     }
     Ok(())
 }
 
 fn val_responses(response: String) -> Result<(), String> {
-    let allowed = ["200", "404"];
-    if !allowed.contains(&response.to_uppercase().as_str()) {
+    if !SUPPORTED_HTTP_RESPONSES.contains(&response.as_str()) {
         return Err(String::from("unsupported response code"));
     }
     Ok(())
@@ -106,6 +105,8 @@ fn val_responses(response: String) -> Result<(), String> {
 // Handles TCP reconstruction and cache entries
 fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches,
                   ipv4_hdr: &etherparse::Ipv4Header, tcp_hdr: &etherparse::TcpHeader, payload: &[u8]) {
+
+    hex_print(payload);
 
     let key = derive_cache_key(&ipv4_display(&ipv4_hdr.source),
                                &ipv4_display(&ipv4_hdr.destination),
@@ -133,6 +134,21 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
 
     let mut http_headers = [httparse::EMPTY_HEADER; 16];
     if cli_opts.is_present("requests") {
+        for req in cli_opts.values_of("requests").unwrap() { // Does beginning of payload represent a valid request?
+            match String::from_utf8(payload[0..req.len()].to_vec()) {
+                Err(_) => return,
+                Ok(s) => {
+                    if s == req {
+                        debug!("HTTP request found");
+                        break;
+                    }else{
+                        debug!("Not HTTP request");
+                        return;
+                    }
+                }
+            }
+        }
+
         let mut req = httparse::Request::new(&mut http_headers);
         match req.parse(&data) {
             Err(err) => {
@@ -140,14 +156,14 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                 return
             },
             Ok(status) => {
-                if status.is_complete() { // do more here
+                if status.is_complete() {
                     debug!("Successful parse");
                     if let Some(entry) = cache.write().get_mut(&key) {
                         entry.stale = true;
                         entry.ts = SystemTime::now();
-                    }else{
-                        panic!("Failed to update cache");
                     }
+                    debug!("Parsed HTTP {:#?}", req);
+                    // do more here
                 } else {
                     if cache.read().contains_key(&key) {
                         debug!("Updating existing cache entry: {:?}", key);
@@ -251,7 +267,7 @@ fn ipv4_display(ip: &[u8;4]) -> String {
 }
 
 // Prints pretty hex representation of passed slice
-fn print_hex(data: &[u8]) {
+fn hex_print(data: &[u8]) {
     let mut pos:usize = 0;
     let mut row:usize = 0;
     let mut out:String = "0000 ".to_string();
@@ -343,6 +359,7 @@ fn main() {
              .takes_value(true)
              .validator(val_requests)
              .require_delimiter(true)
+             .default_value("GET,POST") // TODO: use constant value
              .conflicts_with("responses"))
         .arg(Arg::with_name("responses")
              .help("List of response statuses to match e.g. 200,404")
@@ -350,9 +367,14 @@ fn main() {
              .long("responses")
              .takes_value(true)
              .validator(val_responses)
-             .use_delimiter(true)
-             .conflicts_with("requests"))
+             .use_delimiter(true))
         .get_matches();
+
+    if cli_opts.is_present("requests") {
+        debug!("Skarfing HTTP requests {:?}", cli_opts.values_of("requests").unwrap());
+    }else{
+        debug!("Skarfing HTTP responses {:?}", cli_opts.values_of("responses").unwrap());
+    }
 
     ctrlc::set_handler(move || {
         euthanize();
@@ -386,8 +408,6 @@ fn main() {
                     break;
                 },
                 Ok(raw_pkt) => {
-                    debug!("Capture started");
-
                     /* pcap/Etherparse strips the Ethernet FCS before it hands the packet to us.
                     So a 60 byte packet was 64 bytes on the wire.
                     Etherparse interprets any Ethernet padding as TCP data. I consider this a bug.
@@ -397,9 +417,8 @@ fn main() {
                         continue;
                     }
 
-                    //debug!("Everything: {:?}", raw_pkt);
-                    debug!("Everything");
-                    print_hex(&raw_pkt.data);
+                    //debug!("Everything");
+                    //hex_print(&raw_pkt.data);
                     let mut packet = raw_pkt.clone();
                     if cli_opts.is_present("chop") {
                         let num = cli_opts.value_of("chop").unwrap().chars().fold(0, |acc, c| c.to_digit(10).unwrap_or(0) + acc);
@@ -429,8 +448,10 @@ fn main() {
                                         match pkt.transport.unwrap() {
                                             Udp(_) => warn!("UDP transport captured when TCP expected"),
                                             Tcp(tcp) => {
-                                                debug!("Calling init_pkt_parse");
-                                                init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+                                                if pkt.payload.len() > 0 {
+                                                    debug!("Calling init_pkt_parse");
+                                                    init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+                                                }
                                             }
                                         }
                                     }
@@ -438,15 +459,16 @@ fn main() {
                             }
                         }
                         Ok(pkt) => {
-                            //debug!("Everything: {:?}", pkt);
                             match pkt.ip.unwrap() {
                                 Version6(_) => warn!("IPv6 packet captured, but IPv4 expected"),
                                 Version4(ipv4) => {
                                     match pkt.transport.unwrap() {
                                         Udp(_) => warn!("UDP transport captured when TCP expected"),
                                         Tcp(tcp) => {
-                                            debug!("Calling init_pkt_parse");
-                                            init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+                                            if pkt.payload.len() > 0 {
+                                                debug!("Calling init_pkt_parse");
+                                                init_pkt_parse(&cache, &cli_opts, &ipv4, &tcp, &pkt.payload);
+                                            }
                                         }
                                     }
                                 }
