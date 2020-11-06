@@ -106,7 +106,7 @@ fn val_responses(response: String) -> Result<(), String> {
 fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches,
                   ipv4_hdr: &etherparse::Ipv4Header, tcp_hdr: &etherparse::TcpHeader, payload: &[u8]) {
 
-    hex_print(payload);
+
 
     let key = derive_cache_key(&ipv4_display(&ipv4_hdr.source),
                                &ipv4_display(&ipv4_hdr.destination),
@@ -134,20 +134,20 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
 
     let mut http_headers = [httparse::EMPTY_HEADER; 16];
     if cli_opts.is_present("requests") {
+        let mut req_found = false;
         for req in cli_opts.values_of("requests").unwrap() { // Does beginning of payload represent a valid request?
             match String::from_utf8(payload[0..req.len()].to_vec()) {
                 Err(_) => return,
                 Ok(s) => {
                     if s == req {
                         debug!("HTTP request found");
-                        break;
-                    }else{
-                        debug!("Not HTTP request");
-                        return;
+                        req_found = true;
                     }
                 }
             }
         }
+        if !req_found { return; }
+        hex_print(payload);
 
         let mut req = httparse::Request::new(&mut http_headers);
         match req.parse(&data) {
@@ -162,9 +162,47 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                         entry.stale = true;
                         entry.ts = SystemTime::now();
                     }
-                    debug!("Parsed HTTP {:#?}", req);
-                    // do more here
-                } else {
+                    //debug!("Parsed HTTP {:#?}", req);
+
+                    // Check if we care about this method type
+                    let mut method_found = false;
+                    for method in cli_opts.values_of("requests").unwrap() {
+                        if method == req.method.unwrap() {
+                            method_found = true;
+                        }
+                    }
+                    if !method_found { return; }
+
+                    // print headers
+                    if cli_opts.is_present("headers") {
+                        for req_head in req.headers.iter() {
+                            for cli_head in cli_opts.values_of("headers").unwrap() {
+                                if req_head.name.to_lowercase() == cli_head.to_lowercase() {
+                                    println!("{}: {}", req_head.name,
+                                             &String::from_utf8(req_head.value.to_vec()).expect("Error converting 8-bit value to ASCII"));
+                                }
+                            }
+                        }
+                    }
+
+                    // print JSON tags
+                    if cli_opts.is_present("json") {
+                        for req_head in req.headers.iter() {
+                            if req_head.name.to_lowercase() == "content-type" {
+                                match String::from_utf8(req_head.value.to_vec()) {
+                                    Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
+                                    Ok(val) => {
+                                        if val.to_lowercase().contains("json") {
+                                            debug!("Found some JSON data");
+                                            // do more stuff here
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                } else { // if status.is_complete()
                     if cache.read().contains_key(&key) {
                         debug!("Updating existing cache entry: {:?}", key);
                         if let Some(entry) = cache.write().get_mut(&key) {
@@ -338,14 +376,14 @@ fn main() {
              .default_value("80")
              .required(false))
         .arg(Arg::with_name("headers")
-             .help("List of HTTP headers to print e.g. server,date")
+             .help("Lowercase list of HTTP headers to printe.g. user-agent,cookie")
              .short("h")
              .long("headers")
              .takes_value(true)
              .use_delimiter(true)
              .required(false))
         .arg(Arg::with_name("json")
-             .help("When content type includes string 'json', print values of these json keys from body")
+             .help("When content-type includes string 'json', print values of these json keys from body")
              .short("j")
              .long("json")
              .value_name("KEY")
