@@ -147,7 +147,6 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
             }
         }
         if !req_found { return; }
-        hex_print(payload);
 
         let mut req = httparse::Request::new(&mut http_headers);
         match req.parse(&data) {
@@ -173,9 +172,32 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     }
                     if !method_found { return; }
 
-                    // print headers
+                    // Discover headers
+                    let mut req_content_type: String = String::from("");
+                    let mut req_content_len: usize = 0;
                     if cli_opts.is_present("headers") {
                         for req_head in req.headers.iter() {
+                            if req_head.name.to_lowercase() == "content-type" {
+                                match String::from_utf8(req_head.value.to_vec()) {
+                                    Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
+                                    Ok(val) => {
+                                        if val.to_lowercase().contains("json") {
+                                            req_content_type = val.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            if req_head.name.to_lowercase() == "content-length" {
+                                match String::from_utf8(req_head.value.to_vec()) {
+                                    Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
+                                    Ok(val) => {
+                                        match val.parse::<usize>() {
+                                            Err(err) => error!("Bad HTTP content-length {:?}", err),
+                                            Ok(length) => req_content_len = length.clone(),
+                                        }
+                                    }
+                                }
+                            }
                             for cli_head in cli_opts.values_of("headers").unwrap() {
                                 if req_head.name.to_lowercase() == cli_head.to_lowercase() {
                                     println!("{}: {}", req_head.name,
@@ -186,20 +208,12 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     }
 
                     // print JSON tags
-                    if cli_opts.is_present("json") {
-                        for req_head in req.headers.iter() {
-                            if req_head.name.to_lowercase() == "content-type" {
-                                match String::from_utf8(req_head.value.to_vec()) {
-                                    Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
-                                    Ok(val) => {
-                                        if val.to_lowercase().contains("json") {
-                                            debug!("Found some JSON data");
-                                            // do more stuff here
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if cli_opts.is_present("json") && req_content_type.contains("json") && req_content_len != 0 {
+                        debug!("Found some JSON data");
+                        hex_print(payload);
+                        // do stuff here
+                        let content = &payload[payload.len() - req_content_len..];
+                        debug!("JSON content: {:?}", content);
                     }
 
                 } else { // if status.is_complete()
@@ -305,6 +319,7 @@ fn ipv4_display(ip: &[u8;4]) -> String {
 }
 
 // Prints pretty hex representation of passed slice
+// TODO: printing last line is broken
 fn hex_print(data: &[u8]) {
     let mut pos:usize = 0;
     let mut row:usize = 0;
@@ -331,6 +346,7 @@ fn hex_print(data: &[u8]) {
         }
         pos = pos + 1;
     }
+    //println!("{} {}", format!("{:>50X}", &out), decoded); // pad out
 }
 
 /////////////////////////////
@@ -431,7 +447,7 @@ fn main() {
             .promisc(true)
             .rfmon(false)
             //.timeout(10)
-            .snaplen(65535)
+            //.snaplen(65535)
             .open().unwrap();
         match capture.filter(&bpf){
             Ok(_) => (),
