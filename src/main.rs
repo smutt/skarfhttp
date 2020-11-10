@@ -40,6 +40,30 @@ struct CacheEntry {
 // FUNCTIONS //
 ///////////////
 
+///////////////////////
+// GENERAL FUNCTIONS //
+///////////////////////
+
+// Die gracefully
+fn euthanize() {
+    info!("Ctrl-C exiting");
+    // TODO
+    std::process::exit(0);
+}
+
+// Derives a cache key from unique pairing of values
+fn derive_cache_key(src_ip: &String, dst_ip: &String, src_port: &u16, dst_port: &u16) -> String {
+    let delim = "_".to_string();
+    let mut key = src_ip.clone();
+    key.push_str(&delim);
+    key.push_str(&dst_ip);
+    key.push_str(&delim);
+    key.push_str(&src_port.to_string());
+    key.push_str(&delim);
+    key.push_str(&dst_port.to_string());
+    key
+}
+
 /////////////////////////
 // Argument Validators //
 /////////////////////////
@@ -51,7 +75,7 @@ fn val_iface(iface: String) -> Result<(), String> {
         _ => return Err(String::from("Invalid capture interface. Make sure you are root.")),
     }
     match Capture::from_device(iface.as_str()).unwrap().promisc(true).rfmon(false).open() {
-        Ok(_) => debug!("test success, {:?} opened in promisc mode", iface),
+        Ok(_) => debug!("{:?} opened in promiscious mode", iface),
         _ => return Err(String::from("Unable to open capture interface in promisc mode. Make sure you are root.")),
     }
     Ok(())
@@ -84,6 +108,17 @@ fn val_port(port: String) -> Result<(), String> {
     return val_range(&port, 1, 65535);
 }
 
+// TODO: get more anal about allowed characters
+fn val_delim(delim: String) -> Result<(), String> {
+    if !delim.is_ascii() {
+        return Err(String::from("invalid delimiter"));
+    }
+    if vec!["!", "$", "(", ")", "[", "]"].contains(&delim.as_str()) {
+        return Err(String::from("invalid delimiter"));
+    }
+    Ok(())
+}
+
 fn val_requests(request: String) -> Result<(), String> {
     if !SUPPORTED_HTTP_REQUESTS.contains(&request.as_str()) {
         return Err(String::from("unsupported request method"));
@@ -98,6 +133,45 @@ fn val_responses(response: String) -> Result<(), String> {
     Ok(())
 }
 
+///////////////////////
+// DISPLAY FUNCTIONS //
+///////////////////////
+
+// Returns display formatted string for ipv4 address
+fn ipv4_display(ip: &[u8;4]) -> String {
+    return ip.iter().map(|x| format!(".{}", x)).collect::<String>().split_off(1);
+}
+
+// Prints pretty hex representation of passed slice
+fn hex_print(data: &[u8]) {
+    let mut pos:usize = 0;
+    let mut row:usize = 0;
+    let mut out:String = "0000 ".to_string();
+    let mut decoded:String = "".to_string();
+
+    for byte in data {
+        if pos != 0 && pos % 16 == 0 {
+            println!("{} {}", out, decoded);
+            row = row + 1;
+            out = format!("{:0>4X} ", row);
+            decoded = "".to_string();
+        }else if pos != 0 && pos % 8 == 0 {
+            out.push_str(" ");
+        }
+
+        out.push_str(&format!(" {:0>2X}", &byte));
+        if byte.is_ascii_alphanumeric() || byte.is_ascii_punctuation() {
+            decoded.push_str(&String::from_utf8(vec![*byte]).expect("Error converting 8-bit value to ASCII"));
+        }else if byte.is_ascii_whitespace() {
+            decoded.push_str(" ");
+        }else{
+            decoded.push_str(".");
+        }
+        pos = pos + 1;
+    }
+    println!("{} {}", format!("{:<54}", &out), decoded);
+}
+
 ////////////////////
 // HTTP FUNCTIONS //
 ////////////////////
@@ -105,8 +179,6 @@ fn val_responses(response: String) -> Result<(), String> {
 // Handles TCP reconstruction and cache entries
 fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &clap::ArgMatches,
                   ipv4_hdr: &etherparse::Ipv4Header, tcp_hdr: &etherparse::TcpHeader, payload: &[u8]) {
-
-
 
     let key = derive_cache_key(&ipv4_display(&ipv4_hdr.source),
                                &ipv4_display(&ipv4_hdr.destination),
@@ -156,7 +228,6 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
             },
             Ok(status) => {
                 if status.is_complete() {
-                    debug!("Successful parse");
                     if let Some(entry) = cache.write().get_mut(&key) {
                         entry.stale = true;
                         entry.ts = SystemTime::now();
@@ -216,8 +287,6 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
 
                     // print JSON tags
                     if cli_opts.is_present("json") && req_content_type.contains("json") && req_content_len != 0 {
-                        debug!("Found some JSON data");
-                        hex_print(payload);
                         let content = payload[payload.len() - req_content_len..].to_vec();
                         match String::from_utf8(content) {
                             Err(_) => error!("Error converting 8-bit http content to ASCII"),
@@ -225,11 +294,13 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                                 match json::parse(&ascii) {
                                     Err(err) => error!("JSON parsing error {:?}", err),
                                     Ok(json) => {
-                                        debug!("{:#?}", json);
+                                        //debug!("{:#?}", json);
                                         for cli_json in cli_opts.values_of("json").unwrap() {
                                             if json.has_key(&cli_json) {
-                                                debug!("Key found {:?}", cli_json);
-                                                println!("{}: {}", cli_json, json[cli_json]);
+                                                if json[cli_json].is_boolean() || json[cli_json].is_number() || json[cli_json].is_string() {
+                                                    //debug!("Key found {:?}", cli_json);
+                                                    println!("json_{}: {}", cli_json, json[cli_json]);
+                                                }
                                             }
                                         }
                                     }
@@ -266,7 +337,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
         match resp.parse(&data) {
             Err(err) => {
                 warn!("Error parsing HTTP response {:?}", err);
-                return
+                return;
             },
             Ok(status) => {
                 if status.is_complete() { // do more here
@@ -302,73 +373,6 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
     }
 }
 
-///////////////////////
-// GENERAL FUNCTIONS //
-///////////////////////
-
-// Die gracefully
-fn euthanize() {
-    info!("Ctrl-C exiting");
-    // TODO
-    std::process::exit(0);
-}
-
-/*
-// End execution quickly with message to stdout
-fn cease(s: &str) {
-    println!("{}", s);
-    std::process::exit(0);
-}
- */
-
-// Derives a cache key from unique pairing of values
-fn derive_cache_key(src_ip: &String, dst_ip: &String, src_port: &u16, dst_port: &u16) -> String {
-    let delim = "_".to_string();
-    let mut key = src_ip.clone();
-    key.push_str(&delim);
-    key.push_str(&dst_ip);
-    key.push_str(&delim);
-    key.push_str(&src_port.to_string());
-    key.push_str(&delim);
-    key.push_str(&dst_port.to_string());
-    key
-}
-
-// Returns display formatted string for ipv4 address
-fn ipv4_display(ip: &[u8;4]) -> String {
-    return ip.iter().map(|x| format!(".{}", x)).collect::<String>().split_off(1);
-}
-
-// Prints pretty hex representation of passed slice
-fn hex_print(data: &[u8]) {
-    let mut pos:usize = 0;
-    let mut row:usize = 0;
-    let mut out:String = "0000 ".to_string();
-    let mut decoded:String = "".to_string();
-
-    for byte in data {
-        if pos != 0 && pos % 16 == 0 {
-            println!("{} {}", out, decoded);
-            row = row + 1;
-            out = format!("{:0>4X} ", row);
-            decoded = "".to_string();
-        }else if pos != 0 && pos % 8 == 0 {
-            out.push_str(" ");
-        }
-
-        out.push_str(&format!(" {:0>2X}", &byte));
-        if byte.is_ascii_alphanumeric() || byte.is_ascii_punctuation() {
-            decoded.push_str(&String::from_utf8(vec![*byte]).expect("Error converting 8-bit value to ASCII"));
-        }else if byte.is_ascii_whitespace() {
-            decoded.push_str(" ");
-        }else{
-            decoded.push_str(".");
-        }
-        pos = pos + 1;
-    }
-    println!("{} {}", format!("{:<54}", &out), decoded);
-}
-
 /////////////////////////////
 // BEGIN PROGRAM EXECUTION //
 /////////////////////////////
@@ -388,12 +392,6 @@ fn main() {
              .takes_value(true)
              .validator(val_chop)
              .required(false))
-        .arg(Arg::with_name("dns")
-             .help("extract DNS names from URLs")
-             .short("d")
-             .long("dns")
-             .takes_value(false)
-             .multiple(false))
         .arg(Arg::with_name("iface")
              .help("pcap interface to listen on, typically a network interface")
              .short("i")
@@ -412,19 +410,34 @@ fn main() {
              .default_value("80")
              .required(false))
         .arg(Arg::with_name("headers")
-             .help("Lowercase list of HTTP headers to printe.g. user-agent,cookie")
+             .help("Lowercase list of HTTP headers to print e.g. user-agent,cookie")
              .short("h")
              .long("headers")
              .takes_value(true)
              .use_delimiter(true)
              .required(false))
         .arg(Arg::with_name("json")
-             .help("When content-type includes string 'json', print values of these json keys from body")
+             .help("When content-type includes string 'json', print [boolean|number|string] values of these json keys")
              .short("j")
              .long("json")
              .value_name("KEY")
              .takes_value(true)
              .require_delimiter(true)
+             .required(false))
+        .arg(Arg::with_name("line")
+             .help("print all output on one comma delimited line")
+             .short("l")
+             .long("line-output")
+             .takes_value(false)
+             .required(false))
+        .arg(Arg::with_name("delim")
+             .help("use custom delimiter")
+             .short("d")
+             .long("delimiter")
+             .value_name("DELIMITER")
+             .takes_value(true)
+             .validator(val_delim)
+             .default_value(",")
              .required(false))
         .arg(Arg::with_name("requests")
              .help("List of request methods to match e.g. GET,POST")
