@@ -204,6 +204,8 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
         data = payload.clone().to_vec();
     }
 
+    let mut output: String = String::from(""); // output buffer for printing
+
     let mut http_headers = [httparse::EMPTY_HEADER; 16];
     if cli_opts.is_present("requests") {
         let mut req_found = false;
@@ -243,7 +245,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     }
                     if !method_found { return; }
 
-                    // Discover headers
+                    // Discover and capture headers
                     let mut req_content_type: String = String::from("");
                     let mut req_content_len: usize = 0;
                     if cli_opts.is_present("headers") {
@@ -278,14 +280,24 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                             }
                             for cli_head in cli_opts.values_of("headers").unwrap() {
                                 if req_head.name.to_lowercase() == cli_head.to_lowercase() {
-                                    println!("{}: {}", req_head.name,
-                                             &String::from_utf8(req_head.value.to_vec()).expect("Error converting 8-bit value to ASCII"));
+                                    match String::from_utf8(req_head.value.to_vec()) {
+                                        Err(err) => error!("Error converting http header to ASCII {:?}", err),
+                                        Ok(val) => {
+                                            if cli_opts.is_present("line") {
+                                                output.push_str(&val);
+                                                output.push_str(&cli_opts.value_of("delim").unwrap());
+                                            }else{
+                                                //debug!("head_{:?}: {:?}", cli_head, val);
+                                                output.push_str(&format!("head_{}: {}\n", req_head.name, val));
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // print JSON tags
+                    // capture JSON tags
                     if cli_opts.is_present("json") && req_content_type.contains("json") && req_content_len != 0 {
                         let content = payload[payload.len() - req_content_len..].to_vec();
                         match String::from_utf8(content) {
@@ -297,9 +309,26 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                                         //debug!("{:#?}", json);
                                         for cli_json in cli_opts.values_of("json").unwrap() {
                                             if json.has_key(&cli_json) {
-                                                if json[cli_json].is_boolean() || json[cli_json].is_number() || json[cli_json].is_string() {
-                                                    //debug!("Key found {:?}", cli_json);
-                                                    println!("json_{}: {}", cli_json, json[cli_json]);
+                                                let json_val: String;
+                                                if json[cli_json].is_string() {
+                                                    //debug!("json_{:?}: {:?}", cli_json, json[cli_json].as_str().unwrap().to_string());
+                                                    json_val = json[cli_json].as_str().unwrap().to_string();
+                                                }else if json[cli_json].is_boolean() {
+                                                    if json[cli_json].as_bool().unwrap() {
+                                                        json_val = "true".to_string();
+                                                    }else{
+                                                        json_val = "false".to_string();
+                                                    }
+                                                }else if json[cli_json].is_number() {
+                                                    json_val = json[cli_json].to_string();
+                                                }else{
+                                                    continue;
+                                                }
+                                                if cli_opts.is_present("line") {
+                                                    output.push_str(&json_val);
+                                                    output.push_str(&cli_opts.value_of("delim").unwrap());
+                                                }else{
+                                                    output.push_str(&format!("json_{}: {}\n", cli_json, json_val));
                                                 }
                                             }
                                         }
@@ -371,6 +400,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
             }
         }
     }
+    println!("{}", output);
 }
 
 /////////////////////////////
