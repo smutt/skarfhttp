@@ -17,7 +17,7 @@ use pcap::{Capture, Device};
 use etherparse::PacketHeaders;
 use etherparse::IpHeader::*;
 use etherparse::TransportHeader::*;
-//use httparse::{Status, Header, Response, Request};
+use json;
 
 ///////////////
 // CONSTANTS //
@@ -193,7 +193,14 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                                     Ok(val) => {
                                         match val.parse::<usize>() {
                                             Err(err) => error!("Bad HTTP content-length {:?}", err),
-                                            Ok(length) => req_content_len = length.clone(),
+                                            Ok(length) => {
+                                                if length < payload.len() {
+                                                    req_content_len = length.clone();
+                                                }else{
+                                                    warn!("Invalid http content-length, ignoring request");
+                                                    return;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -211,9 +218,24 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     if cli_opts.is_present("json") && req_content_type.contains("json") && req_content_len != 0 {
                         debug!("Found some JSON data");
                         hex_print(payload);
-                        // do stuff here
-                        let content = &payload[payload.len() - req_content_len..];
-                        debug!("JSON content: {:?}", content);
+                        let content = payload[payload.len() - req_content_len..].to_vec();
+                        match String::from_utf8(content) {
+                            Err(_) => error!("Error converting 8-bit http content to ASCII"),
+                            Ok(ascii) => {
+                                match json::parse(&ascii) {
+                                    Err(err) => error!("JSON parsing error {:?}", err),
+                                    Ok(json) => {
+                                        debug!("{:#?}", json);
+                                        for cli_json in cli_opts.values_of("json").unwrap() {
+                                            if json.has_key(&cli_json) {
+                                                debug!("Key found {:?}", cli_json);
+                                                println!("{}: {}", cli_json, json[cli_json]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                 } else { // if status.is_complete()
@@ -252,9 +274,8 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     if let Some(entry) = cache.write().get_mut(&key) {
                         entry.stale = true;
                         entry.ts = SystemTime::now();
-                    } else {
-                        panic!("Failed to update cache");
                     }
+                    // handle responses here
                 } else {
                     if cache.read().contains_key(&key) {
                         debug!("Updating existing cache entry: {:?}", key);
@@ -319,7 +340,6 @@ fn ipv4_display(ip: &[u8;4]) -> String {
 }
 
 // Prints pretty hex representation of passed slice
-// TODO: printing last line is broken
 fn hex_print(data: &[u8]) {
     let mut pos:usize = 0;
     let mut row:usize = 0;
@@ -346,7 +366,7 @@ fn hex_print(data: &[u8]) {
         }
         pos = pos + 1;
     }
-    //println!("{} {}", format!("{:>50X}", &out), decoded); // pad out
+    println!("{} {}", format!("{:<54}", &out), decoded);
 }
 
 /////////////////////////////
