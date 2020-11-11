@@ -237,13 +237,8 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     //debug!("Parsed HTTP {:#?}", req);
 
                     // Check if we care about this method type
-                    let mut method_found = false;
-                    for method in cli_opts.values_of("requests").unwrap() {
-                        if method == req.method.unwrap() {
-                            method_found = true;
-                        }
-                    }
-                    if !method_found { return; }
+                    if !cli_opts.values_of("requests").unwrap().
+                        into_iter().any(|x| x == req.method.unwrap()) { return }
 
                     // Discover and capture headers
                     let mut req_content_type: String = String::from("");
