@@ -9,7 +9,7 @@ All rights reserved.
 #[macro_use] extern crate log;
 use clap::{Arg, App};
 use std::thread;
-use std::time::{SystemTime};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -400,6 +400,30 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
             }
         }
     }
+
+    // finalize output and print
+    if cli_opts.is_present("line") {
+        output.truncate(output.len() - 1);
+        if cli_opts.is_present("timestamp") {
+            match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(ts) => output.insert_str(0, &format!("{}{}", ts.as_secs(), cli_opts.value_of("delim").unwrap())),
+                Err(err) => {
+                    error!("Error generating timestamp from system time {:?}", err);
+                    output.insert_str(0, cli_opts.value_of("delim").unwrap());
+                }
+            }
+        }
+    }else{
+        if cli_opts.is_present("timestamp") {
+            match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(ts) => output.insert_str(0, &format!("ts: {}: \n", ts.as_secs())),
+                Err(err) => {
+                    error!("Error generating timestamp from system time {:?}", err);
+                    output.insert_str(0, "ts: \n");
+                }
+            }
+        }
+    }
     println!("{}", output);
 }
 
@@ -461,13 +485,19 @@ fn main() {
              .takes_value(false)
              .required(false))
         .arg(Arg::with_name("delim")
-             .help("use custom delimiter")
+             .help("Use custom delimiter")
              .short("d")
              .long("delimiter")
              .value_name("DELIMITER")
              .takes_value(true)
              .validator(val_delim)
              .default_value(",")
+             .required(false))
+        .arg(Arg::with_name("timestamp")
+             .help("prepend 64-bit UNIX timestemp to output")
+             .short("t")
+             .long("timestamp")
+             .takes_value(false)
              .required(false))
         .arg(Arg::with_name("requests")
              .help("List of request methods to match e.g. GET,POST")
