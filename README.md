@@ -1,6 +1,6 @@
 Skarf HTTP traffic and spit up useful nibbles and bytes 
 
-
+`
 USAGE:
     skarfhttp [FLAGS] [OPTIONS] --iface <IFACE>
 
@@ -20,4 +20,4 @@ OPTIONS:
     -p, --port <PORT>              TCP port for bpf filter [default: 80]
     -q, --requests <requests>      List of request methods to match e.g. GET,POST [default: GET,POST]
     -s, --responses <responses>    List of response statuses to match e.g. 200,404
-
+`
