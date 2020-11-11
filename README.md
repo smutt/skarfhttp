@@ -15,8 +15,7 @@ OPTIONS:
     -d, --delimiter <DELIMITER>    Use custom delimiter [default: ,]  
     -h, --headers <headers>        Lowercase list of HTTP headers to print e.g. user-agent,cookie  
     -i, --iface <IFACE>            pcap interface to listen on, typically a network interface  
-    -j, --json <KEY>               When content-type includes string 'json', print [boolean|number|string] values of  
-                                   these json keys  
+    -j, --json <KEY>               When content-type includes string 'json', print [boolean|number|string] values of these json keys  
     -p, --port <PORT>              TCP port for bpf filter [default: 80]  
     -q, --requests <requests>      List of request methods to match e.g. GET,POST [default: GET,POST]  
     -s, --responses <responses>    List of response statuses to match e.g. 200,404  
