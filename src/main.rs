@@ -7,7 +7,7 @@ All rights reserved.
 // INCLUDES //
 //////////////
 #[macro_use] extern crate log;
-use clap::{Arg, App};
+use clap::{Arg, App, ArgGroup};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
@@ -24,6 +24,8 @@ use json;
 ///////////////
 const SUPPORTED_HTTP_REQUESTS: [&str; 2] = ["POST", "GET"]; // Supported HTTP requests
 const SUPPORTED_HTTP_RESPONSES: [&str; 2] = ["200", "404"]; // Supported HTTP responses
+const INVALID_DELIMITER_CHARS: [&str; 10] = ["\"", "\\", "'", "`", "{", "}", "(", ")", "[", "]"]; // Disallowed characters in output delimiter
+const MAX_DELIMITER_LEN: usize = 3; // Maximum number of characters allowed in output delimiter
 
 /////////////
 // STRUCTS //
@@ -75,7 +77,7 @@ fn val_iface(iface: String) -> Result<(), String> {
         _ => return Err(String::from("Invalid capture interface. Make sure you are root.")),
     }
     match Capture::from_device(iface.as_str()).unwrap().promisc(true).rfmon(false).open() {
-        Ok(_) => debug!("{:?} opened in promiscious mode", iface),
+        Ok(_) => { },
         _ => return Err(String::from("Unable to open capture interface in promisc mode. Make sure you are root.")),
     }
     Ok(())
@@ -108,13 +110,15 @@ fn val_port(port: String) -> Result<(), String> {
     return val_range(&port, 1, 65535);
 }
 
-// TODO: get more anal about allowed characters
 fn val_delim(delim: String) -> Result<(), String> {
     if !delim.is_ascii() {
         return Err(String::from("invalid delimiter"));
     }
-    if vec!["!", "$", "(", ")", "[", "]"].contains(&delim.as_str()) {
-        return Err(String::from("invalid delimiter"));
+    if delim.len() > MAX_DELIMITER_LEN {
+        return Err(String::from("too many characters in delimiter"));
+    }
+    if INVALID_DELIMITER_CHARS.iter().any(|&x| delim.contains(x)) {
+        return Err(String::from("invalid character in delimiter"));
     }
     Ok(())
 }
@@ -370,7 +374,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                         entry.stale = true;
                         entry.ts = SystemTime::now();
                     }
-                    // handle responses here
+                    // TODO: handle responses here
                 } else {
                     if cache.read().contains_key(&key) {
                         debug!("Updating existing cache entry: {:?}", key);
@@ -437,7 +441,7 @@ fn main() {
              .help("Chop BYTES from beginning of every packet")
              .short("C")
              .long("chop")
-             .value_name("BYTES")
+             .value_name("bytes")
              .takes_value(true)
              .validator(val_chop)
              .required(false))
@@ -445,15 +449,15 @@ fn main() {
              .help("pcap interface to listen on, typically a network interface")
              .short("i")
              .long("iface")
-             .value_name("IFACE")
+             .value_name("interface")
              .takes_value(true)
              .validator(val_iface)
              .required(true))
         .arg(Arg::with_name("port")
-             .help("TCP port for bpf filter")
+             .help("TCP port for bpf")
              .short("p")
              .long("port")
-             .value_name("PORT")
+             .value_name("port")
              .takes_value(true)
              .validator(val_port)
              .default_value("80")
@@ -469,24 +473,26 @@ fn main() {
              .help("When content-type includes string 'json', print [boolean|number|string] values of these json keys")
              .short("j")
              .long("json")
-             .value_name("KEY")
+             .value_name("keys")
              .takes_value(true)
              .require_delimiter(true)
+             .requires("requests")
              .required(false))
         .arg(Arg::with_name("line")
-             .help("print all output on one comma delimited line")
+             .help("print all output on one delimited line")
              .short("l")
              .long("line-output")
              .takes_value(false)
              .required(false))
         .arg(Arg::with_name("delim")
-             .help("Use custom delimiter")
+             .help("Use custom delimiter in single line output")
              .short("d")
              .long("delimiter")
-             .value_name("DELIMITER")
+             .value_name("delimiter")
              .takes_value(true)
              .validator(val_delim)
              .default_value(",")
+             .requires("line")
              .required(false))
         .arg(Arg::with_name("timestamp")
              .help("prepend 64-bit UNIX timestemp to output")
@@ -500,22 +506,25 @@ fn main() {
              .long("requests")
              .takes_value(true)
              .validator(val_requests)
-             .require_delimiter(true)
-             .default_value("GET,POST") // TODO: use constant value
-             .conflicts_with("responses"))
+             .require_delimiter(true))
         .arg(Arg::with_name("responses")
              .help("List of response statuses to match e.g. 200,404")
              .short("s")
              .long("responses")
              .takes_value(true)
              .validator(val_responses)
-             .use_delimiter(true))
+             .require_delimiter(true))
+        .group(ArgGroup::with_name("direction")
+               .args(&["requests", "responses"])
+               .required(true))
         .get_matches();
 
     if cli_opts.is_present("requests") {
-        debug!("Skarfing HTTP requests {:?}", cli_opts.values_of("requests").unwrap());
+        debug!("Skarfing HTTP requests {:?}", cli_opts.values_of("requests").unwrap().
+               into_iter().map(|s| format!("{:},", s)).collect::<String>().trim_end_matches(","));
     }else{
-        debug!("Skarfing HTTP responses {:?}", cli_opts.values_of("responses").unwrap());
+        debug!("Skarfing HTTP responses {:?}", cli_opts.values_of("responses").unwrap().
+               into_iter().map(|s| format!("{:},", s)).collect::<String>().trim_end_matches(","));
     }
 
     ctrlc::set_handler(move || {
@@ -542,7 +551,7 @@ fn main() {
             Err(err) => error!("BPF error {}", err.to_string()),
         }
 
-        debug!("Starting capture");
+        debug!("{:?} opened in promiscious mode", cli_opts.value_of("iface").unwrap());
         loop {
             match capture.next() {
                 Err(err) => {
