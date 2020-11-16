@@ -244,39 +244,41 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                     if !cli_opts.values_of("requests").unwrap().
                         into_iter().any(|x| x == req.method.unwrap()) { return }
 
-                    // Discover and capture headers
+                    // Deal with headers
                     let mut req_content_type: String = String::from("");
                     let mut req_content_len: usize = 0;
-                    if cli_opts.is_present("headers") {
-                        for req_head in req.headers.iter() {
-                            if req_head.name.to_lowercase() == "content-type" {
-                                match String::from_utf8(req_head.value.to_vec()) {
-                                    Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
-                                    Ok(val) => {
-                                        if val.to_lowercase().contains("json") {
-                                            req_content_type = val.clone();
-                                        }
+                    for req_head in req.headers.iter() {
+                        if req_head.name.to_lowercase() == "content-type" {
+                            match String::from_utf8(req_head.value.to_vec()) {
+                                Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
+                                Ok(val) => {
+                                    if val.to_lowercase().contains("json") {
+                                        req_content_type = val.clone();
                                     }
                                 }
                             }
-                            if req_head.name.to_lowercase() == "content-length" {
-                                match String::from_utf8(req_head.value.to_vec()) {
-                                    Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
-                                    Ok(val) => {
-                                        match val.parse::<usize>() {
-                                            Err(err) => error!("Bad HTTP content-length {:?}", err),
-                                            Ok(length) => {
-                                                if length < payload.len() {
-                                                    req_content_len = length.clone();
-                                                }else{
-                                                    warn!("Invalid http content-length, ignoring request");
-                                                    return;
-                                                }
+                        }
+                        if req_head.name.to_lowercase() == "content-length" {
+                            match String::from_utf8(req_head.value.to_vec()) {
+                                Err(err) => error!("Error converting 8-bit value to ASCII {:?}", err),
+                                Ok(val) => {
+                                    match val.parse::<usize>() {
+                                        Err(err) => error!("Bad HTTP content-length {:?}", err),
+                                        Ok(length) => {
+                                            if length < payload.len() {
+                                                req_content_len = length.clone();
+                                            }else{
+                                                warn!("Invalid http content-length, ignoring request");
+                                                return;
                                             }
                                         }
                                     }
                                 }
                             }
+                        }
+
+                        // Capture headers
+                        if cli_opts.is_present("headers") {
                             for cli_head in cli_opts.values_of("headers").unwrap() {
                                 if req_head.name.to_lowercase() == cli_head.to_lowercase() {
                                     match String::from_utf8(req_head.value.to_vec()) {
@@ -337,7 +339,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                         }
                     }
 
-                } else { // if status.is_complete()
+                }else{ // if status.is_complete()
                     if cache.read().contains_key(&key) {
                         debug!("Updating existing cache entry: {:?}", key);
                         if let Some(entry) = cache.write().get_mut(&key) {
@@ -345,10 +347,10 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                             entry.seq =  Some(tcp_hdr.sequence_number + payload.len() as u32);
                             entry.data = Some(data.to_vec());
                             entry.stale = false;
-                        } else {
+                        }else{
                             panic!("Failed to update cache");
                         }
-                    } else {
+                    }else{
                         debug!("Creating new cache entry: {:?}", key);
                         cache.write().insert(key, CacheEntry {
                             ts: SystemTime::now(),
@@ -360,7 +362,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                 }
             }
         }
-    } else { // Assume cli_opts.is_present("responses")
+    }else{ // Assume cli_opts.is_present("responses")
         let mut resp = httparse::Response::new(&mut http_headers);
         match resp.parse(&data) {
             Err(err) => {
@@ -375,7 +377,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                         entry.ts = SystemTime::now();
                     }
                     // TODO: handle responses here
-                } else {
+                }else{
                     if cache.read().contains_key(&key) {
                         debug!("Updating existing cache entry: {:?}", key);
                         if let Some(entry) = cache.write().get_mut(&key) {
@@ -383,10 +385,10 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
                             entry.seq =  Some(tcp_hdr.sequence_number + payload.len() as u32);
                             entry.data = Some(data.to_vec());
                             entry.stale = false;
-                        } else {
+                        }else{
                             panic!("Failed to update cache");
                         }
-                    } else {
+                    }else{
                         debug!("Creating new cache entry: {:?}", key);
                         cache.write().insert(key, CacheEntry {
                             ts: SystemTime::now(),
@@ -402,7 +404,7 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
 
     // finalize output and print
     if cli_opts.is_present("line") {
-        output.truncate(output.len() - 1);
+        output = output.trim_end_matches(cli_opts.value_of("delim").unwrap()).to_string();
         if cli_opts.is_present("timestamp") {
             match SystemTime::now().duration_since(UNIX_EPOCH) {
                 Ok(ts) => output.insert_str(0, &format!("{}{}", ts.as_secs(), cli_opts.value_of("delim").unwrap())),
