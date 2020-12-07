@@ -214,6 +214,10 @@ fn init_pkt_parse(cache: &Arc<RwLock<HashMap<String, CacheEntry>>>, cli_opts: &c
     if cli_opts.is_present("requests") {
         let mut req_found = false;
         for req in cli_opts.values_of("requests").unwrap() { // Does beginning of payload represent a valid request?
+            if req.len() >= payload.len() {
+                warn!("Invalid request: Payload truncated");
+                return;
+            }
             match String::from_utf8(payload[0..req.len()].to_vec()) {
                 Err(_) => return,
                 Ok(s) => {
